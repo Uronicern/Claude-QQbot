@@ -1,6 +1,7 @@
 """QQ Bot 客户端 — 处理 C2C 私聊消息"""
 
 import asyncio
+import time
 
 import botpy
 from botpy.message import C2CMessage
@@ -12,7 +13,6 @@ from message_utils import split_message
 
 logger = structlog.get_logger()
 
-
 AVAILABLE_MODELS = {
     "haiku": "claude-haiku-4-5-20251001",
     "sonnet": "claude-sonnet-4-6",
@@ -20,6 +20,9 @@ AVAILABLE_MODELS = {
 }
 
 MODEL_ALIASES = {v: k for k, v in AVAILABLE_MODELS.items()}
+
+# 消息去重缓存保留时间（秒）
+DEDUP_TTL = 60
 
 
 class QQBot(botpy.Client):
@@ -29,12 +32,18 @@ class QQBot(botpy.Client):
         self.settings = settings
         self.claude = claude_bridge
         self._msg_seq: dict[str, int] = {}
-        self._user_models: dict[str, str] = {}  # 每用户模型选择
+        self._user_models: dict[str, str] = {}
+        self._processed_msgs: dict[str, float] = {}  # msg_id -> timestamp
 
     async def on_ready(self):
-        logger.info("QQ Bot 已上线", bot=f"{self.robot.name}")
+        name = getattr(self, "robot", None)
+        logger.info("QQ Bot 已上线", bot=name.name if name else "unknown")
 
     async def on_c2c_message_create(self, message: C2CMessage):
+        # 消息去重
+        if self._is_duplicate(message.id):
+            return
+
         user_openid = message.author.user_openid
         content = (message.content or "").strip()
 
@@ -57,6 +66,19 @@ class QQBot(botpy.Client):
         # 普通消息 → Claude
         await self._handle_message(message, content)
 
+    def _is_duplicate(self, msg_id: str) -> bool:
+        """去重：跳过已处理的消息，同时清理过期记录。"""
+        now = time.time()
+        # 清理过期记录
+        expired = [k for k, t in self._processed_msgs.items() if now - t > DEDUP_TTL]
+        for k in expired:
+            del self._processed_msgs[k]
+
+        if msg_id in self._processed_msgs:
+            return True
+        self._processed_msgs[msg_id] = now
+        return False
+
     async def _handle_command(self, message: C2CMessage, content: str):
         cmd = content.split()[0].lower()
         user_openid = message.author.user_openid
@@ -68,7 +90,6 @@ class QQBot(botpy.Client):
         elif cmd == "/model":
             parts = content.split()
             if len(parts) < 2:
-                # 显示当前模型和可选列表
                 current = self._user_models.get(user_openid, self.settings.claude_model)
                 alias = MODEL_ALIASES.get(current, current)
                 lines = [
@@ -93,8 +114,11 @@ class QQBot(botpy.Client):
             if not info:
                 await self._reply(message, "当前没有活跃会话。")
             else:
+                current_model = self._user_models.get(user_openid, self.settings.claude_model)
+                alias = MODEL_ALIASES.get(current_model, current_model)
                 text = (
                     f"会话状态:\n"
+                    f"  模型: {alias} ({current_model})\n"
                     f"  会话ID: {info['session_id']}\n"
                     f"  创建时间: {info['created']}\n"
                     f"  持续时间: {info['duration']}\n"
@@ -122,6 +146,11 @@ class QQBot(botpy.Client):
     async def _handle_message(self, message: C2CMessage, content: str):
         user_openid = message.author.user_openid
 
+        # 检查会话是否过期重建
+        _, is_expired = self.claude.session_manager.get_or_create(user_openid)
+        if is_expired:
+            await self._reply(message, "[提示] 上次会话已过期，已自动开始新对话。")
+
         # 调用 Claude（使用用户选择的模型）
         model = self._user_models.get(user_openid)
         response = await self.claude.query(user_openid, content, model=model)
@@ -136,12 +165,18 @@ class QQBot(botpy.Client):
 
         # 分割长消息并发送
         chunks = split_message(response.content)
-        for i, chunk in enumerate(chunks):
-            await self._reply(message, chunk)
-            if i < len(chunks) - 1:
-                await asyncio.sleep(0.3)  # 避免 QQ 限流
+        if not chunks:
+            chunks = ["(空响应)"]
 
-    async def _reply(self, message: C2CMessage, text: str):
+        for i, chunk in enumerate(chunks):
+            success = await self._reply(message, chunk)
+            if not success:
+                break
+            if i < len(chunks) - 1:
+                await asyncio.sleep(1.0)  # QQ 限流保护
+
+    async def _reply(self, message: C2CMessage, text: str) -> bool:
+        """发送回复，返回是否成功。"""
         user_openid = message.author.user_openid
 
         # 递增消息序列号
@@ -156,5 +191,7 @@ class QQBot(botpy.Client):
                 msg_id=message.id,
                 msg_seq=seq,
             )
+            return True
         except Exception as e:
             logger.error("发送消息失败", user=user_openid[:8], error=str(e))
+            return False

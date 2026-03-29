@@ -7,6 +7,9 @@ QQ_MAX_TEXT_LENGTH = 1800  # QQ 限制约 2000，保守取 1800
 
 def split_message(text: str, max_length: int = QQ_MAX_TEXT_LENGTH) -> list[str]:
     """将长文本分割为多条消息，保持代码块完整性。"""
+    if not text or not text.strip():
+        return []
+
     if len(text) <= max_length:
         return [text]
 
@@ -36,6 +39,9 @@ def split_message(text: str, max_length: int = QQ_MAX_TEXT_LENGTH) -> list[str]:
 
 def _find_split_point(text: str, max_length: int) -> int:
     """找到最佳分割位置：段落 > 行 > 句子 > 硬切。"""
+    if max_length <= 0:
+        return len(text)
+
     # 优先在段落边界分割
     pos = text.rfind("\n\n", 0, max_length)
     if pos > max_length // 3:
@@ -81,9 +87,13 @@ def format_error(error: Exception) -> str:
     msg = str(error)
 
     error_map = {
-        "CLINotFoundError": "Claude CLI 未安装或未找到，请确保已安装 @anthropic-ai/claude-code",
-        "CLIConnectionError": "无法连接到 Claude，请检查网络和认证配置",
-        "TimeoutError": "Claude 响应超时，请稍后再试或发送更简短的消息",
+        "AuthenticationError": "API 认证失败，请检查 ANTHROPIC_API_KEY 配置",
+        "RateLimitError": "API 请求频率超限，请稍后再试",
+        "APIConnectionError": "无法连接到 API，请检查网络和 ANTHROPIC_BASE_URL 配置",
+        "APITimeoutError": "Claude 响应超时，请稍后再试或发送更简短的消息",
+        "BadRequestError": "请求格式错误，请尝试 /new 重置会话后重试",
+        "NotFoundError": "模型不存在，请用 /model 切换到可用模型",
+        "InternalServerError": "API 服务端错误，请稍后再试",
     }
 
     friendly = error_map.get(name)

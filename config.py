@@ -1,6 +1,5 @@
 """配置管理 — 从 .env 文件加载设置"""
 
-from pathlib import Path
 from typing import Optional
 
 from pydantic import SecretStr, field_validator
@@ -19,25 +18,28 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[SecretStr] = None
     anthropic_base_url: Optional[str] = None
     claude_model: str = "claude-sonnet-4-6"
-    claude_max_turns: int = 10
     claude_timeout_seconds: int = 300
 
     # 项目
-    working_directory: Path
     session_timeout_hours: int = 24
     allowed_users: Optional[str] = None
 
     # 日志
     log_level: str = "INFO"
 
-    @field_validator("working_directory")
+    @field_validator("anthropic_api_key", mode="before")
     @classmethod
-    def validate_working_directory(cls, v: Path) -> Path:
-        v = v.resolve()
-        if not v.exists():
-            raise ValueError(f"工作目录不存在: {v}")
-        if not v.is_dir():
-            raise ValueError(f"路径不是目录: {v}")
+    def empty_api_key_to_none(cls, v):
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @field_validator("anthropic_base_url", mode="before")
+    @classmethod
+    def empty_base_url_to_none(cls, v):
+        if isinstance(v, str):
+            v = v.strip()
+            return v if v else None
         return v
 
     @property

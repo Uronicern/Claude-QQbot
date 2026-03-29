@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 
 from config import Settings
 
+MAX_HISTORY = 40  # 最大保留消息条数
+
 
 @dataclass
 class ClaudeSession:
@@ -15,7 +17,7 @@ class ClaudeSession:
     total_cost: float = 0.0
     total_turns: int = 0
     message_count: int = 0
-    messages: list[dict] = field(default_factory=list)  # 对话历史
+    messages: list[dict] = field(default_factory=list)
 
     def touch(self):
         self.last_used = datetime.now()
@@ -23,12 +25,19 @@ class ClaudeSession:
 
     def add_user_message(self, content: str):
         self.messages.append({"role": "user", "content": content})
-        # 保留最近 40 条消息，防止 token 过多
-        if len(self.messages) > 40:
-            self.messages = self.messages[-40:]
+        self._truncate()
 
     def add_assistant_message(self, content: str):
         self.messages.append({"role": "assistant", "content": content})
+        self._truncate()
+
+    def _truncate(self):
+        """截断历史，确保首条消息为 user 角色（API 要求）。"""
+        if len(self.messages) > MAX_HISTORY:
+            self.messages = self.messages[-MAX_HISTORY:]
+        # 确保第一条是 user 消息
+        while self.messages and self.messages[0]["role"] != "user":
+            self.messages.pop(0)
 
 
 class SessionManager:
@@ -36,15 +45,20 @@ class SessionManager:
         self._sessions: dict[str, ClaudeSession] = {}
         self._timeout = timedelta(hours=settings.session_timeout_hours)
 
-    def get_or_create(self, user_openid: str) -> ClaudeSession:
+    def get_or_create(self, user_openid: str) -> tuple[ClaudeSession, bool]:
+        """返回 (session, is_new)，is_new=True 表示会话过期被重建。"""
+        self._cleanup_expired()
+
         session = self._sessions.get(user_openid)
         if session and (datetime.now() - session.last_used) < self._timeout:
             session.touch()
-            return session
+            return session, False
+
         # 过期或不存在，创建新的
+        is_new = session is not None  # 有旧的说明是过期重建
         session = ClaudeSession(user_openid=user_openid)
         self._sessions[user_openid] = session
-        return session
+        return session, is_new
 
     def update_session(self, user_openid: str, session_id: str | None, cost: float, turns: int):
         session = self._sessions.get(user_openid)
@@ -71,3 +85,10 @@ class SessionManager:
             "turns": session.total_turns,
             "cost": f"${session.total_cost:.4f}",
         }
+
+    def _cleanup_expired(self):
+        """清理所有过期会话，防止内存泄漏。"""
+        now = datetime.now()
+        expired = [k for k, v in self._sessions.items() if (now - v.last_used) >= self._timeout]
+        for k in expired:
+            del self._sessions[k]
