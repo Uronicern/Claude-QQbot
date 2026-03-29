@@ -1,0 +1,19 @@
+[project]
+name = "claude-code-qqbot"
+version = "0.1.0"
+description = "将 Claude Code 接入 QQ 机器人"
+requires-python = ">=3.11"
+dependencies = [
+    "qq-botpy>=1.2.0",
+    "claude-agent-sdk>=0.1.39",
+    "pydantic-settings>=2.9",
+    "python-dotenv>=1.0",
+    "structlog>=25.4",
+]
+
+[tool.setuptools]
+py-modules = ["main", "config", "bot", "claude_bridge", "session", "message_utils"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
