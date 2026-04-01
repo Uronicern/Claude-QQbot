@@ -1,6 +1,7 @@
 """QQ Bot 客户端 — 处理 C2C 私聊消息"""
 
 import asyncio
+import base64
 import time
 
 import botpy
@@ -47,10 +48,14 @@ class QQBot(botpy.Client):
         user_openid = message.author.user_openid
         content = (message.content or "").strip()
 
-        if not content:
+        # 检查是否有图片附件
+        image_blocks = await self._extract_images(message)
+
+        if not content and not image_blocks:
             return
 
-        logger.info("收到私聊消息", user=user_openid[:8], content=content[:50])
+        logger.info("收到私聊消息", user=user_openid[:8], content=content[:50],
+                     images=len(image_blocks))
 
         # 鉴权
         allowed = self.settings.allowed_user_list
@@ -58,13 +63,56 @@ class QQBot(botpy.Client):
             await self._reply(message, "未授权的用户。")
             return
 
-        # 命令路由
-        if content.startswith("/"):
+        # 命令路由（仅纯文本命令）
+        if content.startswith("/") and not image_blocks:
             await self._handle_command(message, content)
             return
 
-        # 普通消息 → Claude
-        await self._handle_message(message, content)
+        # 构建 prompt（可能包含图片）
+        if image_blocks:
+            prompt = image_blocks.copy()
+            if content:
+                prompt.append({"type": "text", "text": content})
+            else:
+                prompt.append({"type": "text", "text": "请分析这张图片。"})
+        else:
+            prompt = content
+
+        # 消息 → Claude
+        await self._handle_message(message, prompt)
+
+    async def _extract_images(self, message: C2CMessage) -> list[dict]:
+        """从消息附件中提取图片，下载并转为 base64 content blocks。"""
+        blocks = []
+        attachments = getattr(message, "attachments", None) or []
+        for att in attachments:
+            ct = getattr(att, "content_type", "") or ""
+            url = getattr(att, "url", None)
+            if not ct.startswith("image/") or not url:
+                continue
+            # 确保 URL 有协议前缀
+            if url.startswith("//"):
+                url = "https:" + url
+            elif not url.startswith("http"):
+                url = "https://" + url
+            try:
+                import asyncio
+                proc = await asyncio.create_subprocess_exec(
+                    "curl", "-sL", "--max-time", "10", "--max-filesize", "5242880", url,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                data, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+                if data and len(data) > 100:
+                    b64 = base64.standard_b64encode(data).decode("ascii")
+                    media_type = ct.split(";")[0].strip()
+                    blocks.append({
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": media_type, "data": b64},
+                    })
+                    logger.info("图片下载成功", size=len(data), type=media_type)
+            except Exception as e:
+                logger.error("图片下载失败", error=str(e))
+        return blocks
 
     def _is_duplicate(self, msg_id: str) -> bool:
         """去重：跳过已处理的消息，同时清理过期记录。"""
@@ -143,7 +191,7 @@ class QQBot(botpy.Client):
             # 未知命令，当作普通消息转发给 Claude
             await self._handle_message(message, content)
 
-    async def _handle_message(self, message: C2CMessage, content: str):
+    async def _handle_message(self, message: C2CMessage, prompt: str | list):
         user_openid = message.author.user_openid
 
         # 检查会话是否过期重建
@@ -153,7 +201,7 @@ class QQBot(botpy.Client):
 
         # 调用 Claude（使用用户选择的模型）
         model = self._user_models.get(user_openid)
-        response = await self.claude.query(user_openid, content, model=model)
+        response = await self.claude.query(user_openid, prompt, model=model)
 
         logger.info(
             "Claude 响应完成",

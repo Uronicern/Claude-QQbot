@@ -8,3 +8,4 @@ build/
 qqbot.log
 qqbot.error.log
 botpy.log
+botpy.log.*

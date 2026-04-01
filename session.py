@@ -27,17 +27,45 @@ class ClaudeSession:
         self.messages.append({"role": "user", "content": content})
         self._truncate()
 
-    def add_assistant_message(self, content: str):
+    def add_assistant_message(self, content):
+        """content 可以是字符串或 content blocks 列表（tool_use 场景）。"""
         self.messages.append({"role": "assistant", "content": content})
         self._truncate()
 
+    def add_tool_result(self, tool_use_id: str, result: str):
+        """添加工具执行结果。"""
+        self.messages.append({
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": result,
+                }
+            ],
+        })
+
     def _truncate(self):
-        """截断历史，确保首条消息为 user 角色（API 要求）。"""
-        if len(self.messages) > MAX_HISTORY:
-            self.messages = self.messages[-MAX_HISTORY:]
-        # 确保第一条是 user 消息
-        while self.messages and self.messages[0]["role"] != "user":
-            self.messages.pop(0)
+        """截断历史，确保不破坏 tool_use/tool_result 配对。"""
+        if len(self.messages) <= MAX_HISTORY:
+            return
+
+        self.messages = self.messages[-MAX_HISTORY:]
+
+        # 确保第一条是 user 消息（非 tool_result）
+        while self.messages:
+            msg = self.messages[0]
+            if msg["role"] == "user":
+                content = msg.get("content")
+                # 如果是 tool_result 列表，不能作为开头
+                if isinstance(content, list) and any(
+                    b.get("type") == "tool_result" for b in content if isinstance(b, dict)
+                ):
+                    self.messages.pop(0)
+                    continue
+                break
+            else:
+                self.messages.pop(0)
 
 
 class SessionManager:
@@ -54,8 +82,7 @@ class SessionManager:
             session.touch()
             return session, False
 
-        # 过期或不存在，创建新的
-        is_new = session is not None  # 有旧的说明是过期重建
+        is_new = session is not None
         session = ClaudeSession(user_openid=user_openid)
         self._sessions[user_openid] = session
         return session, is_new
@@ -87,7 +114,6 @@ class SessionManager:
         }
 
     def _cleanup_expired(self):
-        """清理所有过期会话，防止内存泄漏。"""
         now = datetime.now()
         expired = [k for k, v in self._sessions.items() if (now - v.last_used) >= self._timeout]
         for k in expired:

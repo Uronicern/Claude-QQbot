@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-py-modules = ["main", "config", "bot", "claude_bridge", "session", "message_utils"]
+py-modules = ["main", "config", "bot", "claude_bridge", "session", "message_utils", "tools"]
 
 [build-system]
 requires = ["setuptools>=68.0"]

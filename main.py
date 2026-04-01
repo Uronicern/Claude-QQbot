@@ -30,6 +30,7 @@ def main():
 
     logger = structlog.get_logger()
     logger.info("启动 Claude Code QQ Bot")
+    logger.info("工作目录", path=str(settings.working_directory))
     logger.info("沙箱模式", sandbox=settings.qq_sandbox)
     logger.info("默认模型", model=settings.claude_model)
 
